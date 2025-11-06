@@ -7,7 +7,7 @@ async function main() {
     const client = new SlitherIoClient({
         server: firstServer,
         nickname: "Marcuth",
-        protocolVersion: 11,
+        version: 333,
         skinId: 15
     })
 

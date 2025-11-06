@@ -1,7 +1,11 @@
+import crypto from "node:crypto"
 import WebSocket from "ws"
 import axios from "axios"
-import { EventType } from "./enums/event-type"
 
+import { EventType } from "./enums/event-type"
+import { to24bit } from "./utils/to-24-bit"
+import { lowercaseAlphabet } from "./utils/alphabet"
+import { decodeSlitherIoSecret } from "./utils/decode-slither-io-secret"
 
 type ServerData = {
     ip: string
@@ -17,149 +21,141 @@ export type SlitherIoClientOptions = {
     }
     nickname: string
     skinId: number
-    protocolVersion: number
+    version: number
+}
+
+export type SlitherIoClientState = {
+    isAlive: boolean
+    snakeId?: number
 }
 
 export class SlitherIoClient {
     private socket?: WebSocket
     private pingInterval?: NodeJS.Timeout
+    readonly state: SlitherIoClientState
 
-    constructor(readonly options: SlitherIoClientOptions) {}
-
-    private async sendStartLoginPacket() {
-        const buffer = Buffer.from([99])
-        this.socket?.send(buffer)
-
-        console.log("[SlitherClient] Enviado Packet StartLogin ('c').")
+    constructor(readonly options: SlitherIoClientOptions) {
+        this.state = {
+            isAlive: false
+        }
     }
 
-    private sendSetUsernameAndSkinPacket() {
+    private async sendStartLoginPacket() {
+        const buffer = Buffer.from([0x01, 0xC3])
+        this.socket?.send(buffer)
+    }
+
+    private isValidVersion(version: string) {
+        if (typeof version !== "string") return false
+
+        for (let i = 0; i < version.length; i++) {
+            const c = version.charCodeAt(i)
+
+            if (!(65 <= c && c <= 122)) return false
+        }
+
+        return true
+    }
+
+    private gotServerVersion(version: string) {
+        if (!this.isValidVersion(version)) {
+            return
+        }
+
+        let randomId = ""
+
+        for (let i = 0; i < 24; i++) {
+            const doUpper = Math.random() < 0.5
+            const baseChar = lowercaseAlphabet[i % lowercaseAlphabet.length]
+            let code = baseChar.charCodeAt(0)
+
+            if (doUpper) {
+                code -= 32
+            }
+
+            code += crypto.randomInt(0, 26)
+            code = Math.max(65, Math.min(122, code))
+            randomId += String.fromCharCode(code)
+        }
+
+        const idba = Buffer.from(randomId, "utf8")
+
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(idba)
+        } else {
+            throw new Error("WebSocket not open; cannot send idba yet.")
+        }
+    }
+
+    private sendInitialSetup() {
         const { nickname, skinId } = this.options
         const nicknameBuffer = Buffer.from(nickname, "utf8")
 
-        // Estrutura: [1 byte 's'] + [1 byte version] + [1 byte skinId] + [1 byte nicknameLength] + [nickname bytes]
         const bufferSize = 4 + nicknameBuffer.length
         const buffer = Buffer.alloc(bufferSize)
+        const header = Buffer.alloc(5)
 
-        // Byte 0: Tipo de Pacote 's' (115)
-        buffer.writeUInt8(115, 0) 
-        buffer.writeUInt8(this.options.protocolVersion - 1, 1)
-        buffer.writeUInt8(skinId, 2)
-        buffer.writeUInt8(nicknameBuffer.length, 3)
-        nicknameBuffer.copy(buffer, 4)
+        header.writeUInt8(0x02, 0)
+        header.writeUInt16BE(this.options.version, 1)
+        header.writeUInt8(skinId, 3)
+        header.writeUInt8(nicknameBuffer.length, 4)
 
         this.socket?.send(buffer)
 
         console.log(`[SlitherClient] Enviado Packet SetUsernameAndSkin ('s'): Nickname="${nickname}", SkinID=${skinId}.`)
     }
 
+    private handleAddOrRemoveSnake(data: Buffer) {
+
+    }
+
     private async handleMessage(data: Buffer) {
         const messageType = data.toString("ascii", 2, 3)
 
+        console.log("[SlitherClient] Nova mensagem", messageType)
+
         switch (messageType) {
             case EventType.PreInitResponse:
-                this.handlePreInitResponse(data)
+                console.log("[SlitherClient] Pre Init response")
+                this.handlePreInit(data)
                 break
             case EventType.InitialSetup:
                 console.log("[SlitherClient] Setup Inicial ('a') recebido. Spawn concluído!")
-                this.startPinging()
+                break
+            case EventType.AddOrRemoveSnake:
+                console.log("[SlitherClient] Add or remove snake")
+                this.handleAddOrRemoveSnake(data)
                 break
             default:
                 break
         }
     }
 
-    private handlePreInitResponse(data: Buffer) {
-        console.log("[SlitherClient] Packet Pre-init Response ('6') recebido. Resolvendo desafio...")
-        
-        // A lógica do desafio envolve:
-        // 1. Decodificar o JS-expression da resposta (data bytes 3-?)
-        // 2. Executar o JS para obter um array de valores (o "secret" no código Java)
-        // 3. Aplicar a fórmula de decodificação para obter 24 bytes de resposta.
-
-        // --- IMPLEMENTAÇÃO SIMPLIFICADA DO CÁLCULO ---
-        // A implementação real é a parte mais difícil e crítica do bot.
-        // O código abaixo é uma TRANSLITERACÃO conceitual do algoritmo
-        // Java/JS reverso, que retorna os 24 bytes de resposta.
-        const secretBuffer = data.slice(3);
-
-        // ✅ CORREÇÃO: Converter explicitamente o Buffer/Uint8Array para number[]
-        // Array.from transforma o TypedArray em um array regular.
-        const secret: number[] = Array.from(secretBuffer)
-        
-        // No Slither.io, a resposta é um Buffer de 24 bytes
-        const secretAnswer = this.decodeSecret(secret) 
-        // ---------------------------------------------------
-
-        // O pacote de resposta para o desafio é: 
-        // [1 byte: 10 ('j'?) ou 1] + [24 bytes de resposta]
-        const responseBuffer = Buffer.alloc(1 + secretAnswer.length)
-        
-        // O primeiro byte do pacote de resposta é usualmente '1', 
-        // ou depende do cálculo do cliente. Vamos usar '1' ou '10' como placeholder.
-        responseBuffer.writeUInt8(1, 0) 
-        secretAnswer.copy(responseBuffer, 1)
-
-        this.socket?.send(responseBuffer)
-        console.log("[SlitherClient] Resposta do desafio enviada. Enviando Packet SetUsernameAndSkin...")
-
-        // 3. Após enviar a resposta do desafio, envie o pacote de spawn
-        this.sendSetUsernameAndSkinPacket()
+    handlePreInit(data: Buffer) {
+        const secret = Array.from(data).slice(3)
+        const answer = decodeSlitherIoSecret(secret)
+        this.socket?.send(answer)
+        this.sendInitialSetup()
     }
-    
-    /**
-     * TRANSLITERACÃO do código Java para decodificar o segredo.
-     * Este é o CORE do processo anti-bot.
-     * @param secret Os bytes (caracteres unicode) do Packet "6".
-     * @returns Um Buffer de 24 bytes com a resposta.
-     */
-    private decodeSecret(secret: number[]): Buffer {
-        // Os bytes do Packet "6" são interpretados como caracteres Unicode
-        // e o cálculo é feito em cima do valor charCode.
-        
-        const result = Buffer.alloc(24)
-        let globalValue = 0
-        
-        for (let i = 0; i < 24; i++) {
-            let value1 = secret[17 + i * 2]
-            if (value1 <= 96) {
-                value1 += 32
-            }
-            value1 = (value1 - 98 - i * 34) % 26
-            if (value1 < 0) {
-                value1 += 26
-            }
 
-            let value2 = secret[18 + i * 2]
-            if (value2 <= 96) {
-                value2 += 32
-            }
-            value2 = (value2 - 115 - i * 34) % 26
-            if (value2 < 0) {
-                value2 += 26
-            }
+    async boost() {
+        const packet = Buffer.from([253])
+        this.socket?.send(packet)
+    }
 
-            let interimResult = (value1 << 4) | value2
-            let offset = interimResult >= 97 ? 97 : 65
-            interimResult -= offset
-            
-            if (i === 0) {
-                globalValue = 2 + interimResult
-            }
-            
-            result[i] = (interimResult + globalValue) % 26 + offset
-            globalValue += 3 + interimResult
-        }
-
-        return result
+    async stopBoost() {
+        const packet = Buffer.from([254])
+        this.socket?.send(packet)
     }
 
     async connect() {
+        if (this.socket) {
+            throw new Error("You're already connected!")
+        }
+
         const { ip, port } = this.options.server
 
         const url = `ws://${ip}:${port}/slither`
-
-        console.log(`[SlitherClient] Tentando conectar a: ${url}`)
 
         this.socket = new WebSocket(url, {
             headers: {
@@ -190,26 +186,6 @@ export class SlitherIoClient {
         })
     }
 
-    private sendPingPacket() {
-        // Packet Ping: [0] = 251
-        const buffer = Buffer.from([251])
-        this.socket?.send(buffer)
-        // console.log("[SlitherClient] Enviado Ping (251).")
-    }
-
-    private startPinging() {
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval)
-        }
-
-        // Pingar a cada 250ms (crítico para manter a conexão viva)
-        this.pingInterval = setInterval(() => {
-            this.sendPingPacket()
-        }, 250)
-
-        console.log("[SlitherClient] Pinging iniciado (intervalo de 250ms).")
-    }
-
     async disconnect() {
         if (this.pingInterval) {
             clearInterval(this.pingInterval)
@@ -218,10 +194,6 @@ export class SlitherIoClient {
         }
 
         this.socket?.close()
-    }
-
-    private static to24bit(val1: number, val2: number, val3: number): number {
-        return val1 * (256 ** 2) + val2 * 256 + val3
     }
 
     static async getServers() {
@@ -243,10 +215,10 @@ export class SlitherIoClient {
             const ip = `${merged[i]}.${merged[i + 1]}.${merged[i + 2]}.${merged[i + 3]}`
             i += 4
 
-            const port = SlitherIoClient.to24bit(merged[i], merged[i + 1], merged[i + 2])
+            const port = to24bit(merged[i], merged[i + 1], merged[i + 2])
             i += 3
 
-            const ac = SlitherIoClient.to24bit(merged[i], merged[i + 1], merged[i + 2])
+            const ac = to24bit(merged[i], merged[i + 1], merged[i + 2])
             i += 3
 
             const clu = merged[i]
