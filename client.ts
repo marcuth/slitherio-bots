@@ -2,19 +2,19 @@ import crypto from "node:crypto"
 import WebSocket from "ws"
 import axios from "axios"
 
+import { decodeSlitherSecret } from "./utils/decode-slither-secret"
+import { lowercaseAlphabet } from "./utils/alphabet"
 import { EventType } from "./enums/event-type"
 import { to24bit } from "./utils/to-24-bit"
-import { lowercaseAlphabet } from "./utils/alphabet"
-import { decodeSlitherIoSecret } from "./utils/decode-slither-io-secret"
 
-type ServerData = {
+export type ServerData = {
     ip: string
     port: number
     ac: number
     clu: number
 }
 
-export type SlitherIoClientOptions = {
+export type SlitherClientOptions = {
     server: {
         ip: string
         port: number
@@ -24,17 +24,19 @@ export type SlitherIoClientOptions = {
     version: number
 }
 
-export type SlitherIoClientState = {
+export type SlitherClientState = {
     isAlive: boolean
     snakeId?: number
 }
 
-export class SlitherIoClient {
+export type SlitherConnectToFirstServer = Omit<SlitherClientOptions, "server">
+
+export class SlitherClient {
     private socket?: WebSocket
     private pingInterval?: NodeJS.Timeout
-    readonly state: SlitherIoClientState
+    readonly state: SlitherClientState
 
-    constructor(readonly options: SlitherIoClientOptions) {
+    constructor(readonly options: SlitherClientOptions) {
         this.state = {
             isAlive: false
         }
@@ -133,7 +135,7 @@ export class SlitherIoClient {
 
     handlePreInit(data: Buffer) {
         const secret = Array.from(data).slice(3)
-        const answer = decodeSlitherIoSecret(secret)
+        const answer = decodeSlitherSecret(secret)
         this.socket?.send(answer)
         this.sendInitialSetup()
     }
@@ -228,5 +230,17 @@ export class SlitherIoClient {
         }
 
         return result
+    }
+
+    static async createWithFirstServer(options: SlitherConnectToFirstServer) {
+        const servers = await SlitherClient.getServers()
+        const firstServer = servers[0]
+        
+        const client = new SlitherClient({
+            server: firstServer,
+            ...options
+        })
+
+        return client
     }
 }

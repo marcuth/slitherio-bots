@@ -1,7 +1,4 @@
-export function decodeSlitherIoSecret(secret: number[]): Buffer {
-    // Os bytes do Packet "6" são interpretados como caracteres Unicode
-    // e o cálculo é feito em cima do valor charCode.
-
+export function decodeSlitherSecret(secret: number[]): Buffer {
     const result = Buffer.alloc(24)
     let globalValue = 0
 

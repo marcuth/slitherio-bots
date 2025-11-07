@@ -1,11 +1,7 @@
-import { SlitherIoClient } from "./client"
+import { SlitherClient } from "./client"
 
 async function main() {
-    const servers = await SlitherIoClient.getServers()
-    const firstServer = servers[0]
-    
-    const client = new SlitherIoClient({
-        server: firstServer,
+    const client = await SlitherClient.createWithFirstServer({
         nickname: "Marcuth",
         version: 333,
         skinId: 15
